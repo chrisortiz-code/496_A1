@@ -126,7 +126,8 @@ class DataLoader:
         df_aug = df.copy()
 
         features = df_aug[self.feature_cols].values
-        aug_features = [self._horizontal_flip(row) for row in features]
+        #10% augmented ratio
+        aug_features = [self._horizontal_flip(row) if np.random.rand()<0.1 else row for row in features ]
 
         df_aug[self.feature_cols] = pd.DataFrame(aug_features, index=df.index)
         return df_aug
@@ -188,6 +189,33 @@ class DataLoader:
             "validation": splits['validation'],
             "test": splits['test']
         }
+
+
+    def to_numpy(self, df, num_classes=10, one_hot=True, drop_na_labels=True):
+        """
+        Converts a DataFrame to (X, y) numpy arrays.
+        If one_hot=False, returns integer labels.
+        """
+        X = df[self.feature_cols].values.astype(np.float32)
+
+        if "label" not in df.columns:
+            return X, None
+
+        y_raw = df["label"].values
+
+        if drop_na_labels:
+            mask = ~pd.isna(y_raw)
+            X = X[mask]
+            y_raw = y_raw[mask]
+
+        y_raw = y_raw.astype(int)
+
+        if one_hot:
+            y = np.eye(num_classes)[y_raw]
+        else:
+            y = y_raw
+
+        return X, y
 
 
 # ==========================================
