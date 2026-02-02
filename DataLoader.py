@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+import torch
+from torch.utils.data import Dataset, DataLoader as TorchDataLoader
 from tensorflow.keras.datasets import fashion_mnist
 
 
@@ -121,31 +123,52 @@ class DataLoader:
         return df_aug
 
     def augment_horizontal_flip(self, df):
-        """Applies horizontal flip to the features of the provided dataframe."""
-        print("Applying Horizontal Flip...")
+        # print("Applying Horizontal Flip...") # Print statements slow down loops, use logging or remove for prod
         df_aug = df.copy()
 
-        features = df_aug[self.feature_cols].values
-        #10% augmented ratio
-        aug_features = [self._horizontal_flip(row) if np.random.rand()<0.1 else row for row in features ]
+        # 1. Get the underlying numpy array (much faster than df access)
+        features = df_aug[self.feature_cols].to_numpy()
 
-        df_aug[self.feature_cols] = pd.DataFrame(aug_features, index=df.index)
+        # 2. Generate a boolean mask for the 10%
+        # This creates an array of True/False instantly
+        mask = np.random.rand(len(features)) < 0.1
+
+        # 3. Apply the flip ONLY to the selected rows
+        # Note: We still iterate here, but only on 10% of the data
+        if mask.any():
+            features[mask] = np.array([self._horizontal_flip(row) for row in features[mask]])
+
+        # 4. Assign back directly (avoids creating an intermediate DataFrame)
+        df_aug[self.feature_cols] = features
+
         return df_aug
-
     # ---------------------------------------------------------
     # Splitting Methods
     # ---------------------------------------------------------
-    def get_supervised_split(self, df, test_size=0.10, val_size=0.10, seed=42):
+    def get_supervised_split(
+            self,
+            df,
+            dataset_pct=0.10,
+            test_size=0.10,
+            val_size=0.10,
+            seed=42
+    ):
         """
-        Splits df into Train, Validation, and Test.
+        Splits df into Train, Validation, and Test
+        using only dataset_pct of the data.
         Returns a dictionary.
         """
+
         np.random.seed(seed)
         n = len(df)
-        indices = np.random.permutation(n)
 
-        n_test = int(test_size * n)
-        n_val = int(val_size * n)
+        # --- 1. Subsample dataset ---
+        n_used = int(dataset_pct * n)
+        indices = np.random.permutation(n)[:n_used]
+
+        # --- 2. Compute split sizes ---
+        n_test = int(test_size * n_used)
+        n_val = int(val_size * n_used)
 
         test_idx = indices[:n_test]
         val_idx = indices[n_test: n_test + n_val]
@@ -163,8 +186,8 @@ class DataLoader:
         Unlabeled train has 'label' column set to NaN.
         Returns a dictionary.
         """
-        # 1. Get standard supervised split first
-        splits = self.get_supervised_split(df, test_size, val_size, seed)
+        # 1. Get standard supervised split first (use ALL data, then split)
+        splits = self.get_supervised_split(df, dataset_pct=1.0, test_size=test_size, val_size=val_size, seed=seed)
         train_pool = splits['train']
 
         # 2. Split Train Pool into Labeled and Unlabeled
@@ -216,6 +239,44 @@ class DataLoader:
             y = y_raw
 
         return X, y
+
+    def to_torch_loaders(self, data_dict, batch_size=64, label_keys=None):
+        """
+        Converts a split dict (from get_supervised_split or get_semi_supervised_split)
+        into a dict of TorchDataLoaders with the same keys.
+
+        label_keys: which keys contain labeled data. Defaults to all keys
+                    whose 'label' column has no NaNs.
+        """
+        import platform
+        num_workers = 0 if platform.system() == 'Windows' else 2
+        pin = torch.cuda.is_available()
+
+        loaders = {}
+        for key, df in data_dict.items():
+            X, y = self.to_numpy(df)
+            if y is None:
+                continue
+            dataset = _DatasetToTorch(X, y)
+            shuffle = ("train" in key)
+            loaders[key] = TorchDataLoader(
+                dataset, batch_size=batch_size, shuffle=shuffle,
+                num_workers=num_workers, pin_memory=pin
+            )
+        return loaders
+
+
+class _DatasetToTorch(Dataset):
+    """Wraps numpy X, y (one-hot) into a PyTorch Dataset with integer labels."""
+    def __init__(self, X, y):
+        self.X = torch.FloatTensor(X)
+        self.y = torch.LongTensor(np.argmax(y, axis=1))
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
 
 
 # ==========================================
