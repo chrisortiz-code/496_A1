@@ -180,7 +180,7 @@ class DataLoader:
             "test": df.iloc[test_idx].reset_index(drop=True)
         }
 
-    def get_semi_supervised_split(self, df, test_size=0.10, val_size=0.10, labeled_ratio=0.20, seed=42):
+    def get_semi_supervised_split(self, df, test_size=0.10, val_size=0.10, labeled_ratio=0.10, seed=42):
         """
         Splits df into Labeled Train, Unlabeled Train, Validation, and Test.
         Unlabeled train has 'label' column set to NaN.
