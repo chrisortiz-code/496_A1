@@ -17,24 +17,14 @@ class Stage2Model(nn.Module):
     globally across all Linear layers, then enforces the mask during fine-tuning
     so pruned weights stay at zero.
 
-    Custom Loss Function (Level 2 vs Vanilla):
-        L(w) = CrossEntropy + lambda1 * |w| + lambda2 * |1 / (w + epsilon)|
+    Loss Function:
+        L(w) = CrossEntropy + lambda1 * |w|
 
-    The two regularization terms create a "sweet spot" for weight magnitudes:
-      - lambda1 * |w|           penalizes weights that grow too large (L1-style)
-      - lambda2 * |1/(w + eps)| penalizes weights that shrink toward zero (inverse penalty)
-
-    Together they encourage weights to stay at moderate magnitudes, which
-    complements magnitude-based pruning by discouraging near-zero weights
-    that would otherwise be pruned.
-
-    Gradient (derived via chain rule, used automatically by autograd):
-        dL/dw = (y_hat - y)x + lambda1 * sgn(w) - lambda2 * sgn(w+eps) / (w+eps)^2
+    L1 regularization encourages sparsity, complementing magnitude-based pruning.
     """
 
     def __init__(self, input_size=784, hidden_size=2056, output_size=10,
-                 init_strategy="he", lr=0.01, momentum=0.04,
-                 lambda1=1e-5, lambda2=1e-5, epsilon=1e-8):
+                 init_strategy="he", lr=0.01, momentum=0.04, lambda1=1e-4):
         super(Stage2Model, self).__init__()
         if init_strategy not in TORCH_INIT_STRATEGIES:
             raise ValueError(f"Strategy must be one of {list(TORCH_INIT_STRATEGIES.keys())}")
@@ -56,10 +46,8 @@ class Stage2Model(nn.Module):
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = optim.SGD(self.parameters(), lr=lr, momentum=momentum)
 
-        # Dual-regularization hyperparameters
-        self.lambda1 = lambda1   # large-weight penalty coefficient
-        self.lambda2 = lambda2   # small-weight penalty coefficient
-        self.epsilon = epsilon   # numerical stability for inverse term
+        # L1 regularization
+        self.lambda1 = lambda1
 
         # Pruning masks: 1 = keep, 0 = pruned. None until prune() is called.
         self.masks = {}
@@ -68,27 +56,15 @@ class Stage2Model(nn.Module):
         return self.network(x)
 
     # ------------------------------------------------------------------
-    # Dual Regularization: large-w penalty + small-w penalty
+    # L1 Regularization
     # ------------------------------------------------------------------
     def _regularization_loss(self):
-        """
-        Computes the two regularization terms over all Linear layer weights:
-            lambda1 * sum(|w|)  +  lambda2 * sum(|1 / (w + epsilon)|)
-
-        Both terms are differentiable and autograd computes the gradients:
-            d/dw [lambda1 * |w|]             = lambda1 * sgn(w)
-            d/dw [lambda2 * |1/(w+eps)|]     = -lambda2 * sgn(w+eps) / (w+eps)^2
-        """
-        large_penalty = 0.0
-        small_penalty = 0.0
-
+        """L1 penalty: lambda1 * sum(|w|) - encourages sparsity."""
+        l1_penalty = 0.0
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                w = module.weight
-                large_penalty = large_penalty + w.abs().sum()
-                small_penalty = small_penalty + (1.0 / (w + self.epsilon)).abs().sum()
-
-        return self.lambda1 * large_penalty + self.lambda2 * small_penalty
+                l1_penalty = l1_penalty + module.weight.abs().sum()
+        return self.lambda1 * l1_penalty
 
     # ------------------------------------------------------------------
     # Pruning
