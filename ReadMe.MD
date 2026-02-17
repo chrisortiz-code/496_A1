@@ -1,7 +1,6 @@
 # a1 - Fashion-MNIST Semi-Supervised Learning
 
-Machine learning experiments on Fashion-MNIST covering preprocessing, ablation studies, L1 regularization, pruning, and semi-supervised learning (Label Propagation + Co-Training).
-
+GIT REPO: https://github.com/chrisortiz-code/496_A1/
 ---
 
 ## Project Structure
