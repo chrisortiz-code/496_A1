@@ -1,0 +1,9 @@
+numpy
+pandas
+matplotlib
+scipy
+scikit-learn
+jupyter
+
+# PyTorch must be installed separately with the CUDA index URL:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
