@@ -7,8 +7,7 @@ Machine learning experiments on Fashion-MNIST covering preprocessing, ablation s
 ## Project Structure
 
 ```
-a1_chris/
-├── .venv/                  ← virtual environment (created by PyCharm)
+a1/
 ├── results/                ← CSV outputs written here during training
 ├── a1.ipynb                ← main notebook
 ├── DataLoader.py           ← data loading, preprocessing, augmentation
