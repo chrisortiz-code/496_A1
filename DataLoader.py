@@ -24,11 +24,8 @@ class DataLoader:
 
         # Master DataFrame
         self.df = pd.concat([X_df, y_df], axis=1)
-
         # Keep track of feature columns (all columns except label)
         self.feature_cols = X_df.columns
-
-        print(f"Data Loaded. Shape: {self.df.shape}")
 
     def get_standard_df(self):
         """Returns the raw dataframe."""
@@ -122,25 +119,36 @@ class DataLoader:
         df_aug[self.feature_cols] = pd.DataFrame(aug_features, index=df.index)
         return df_aug
 
-    def augment_horizontal_flip(self, df):
-        # print("Applying Horizontal Flip...") # Print statements slow down loops, use logging or remove for prod
+    def augment_horizontal_flip(self, df, prob=1.0):
+        """Apply horizontal flip to prob fraction of images."""
         df_aug = df.copy()
-
-        # 1. Get the underlying numpy array (much faster than df access)
-        features = df_aug[self.feature_cols].to_numpy()
-
-        # 2. Generate a boolean mask for the 10%
-        # This creates an array of True/False instantly
-        mask = np.random.rand(len(features)) < 0.1
-
-        # 3. Apply the flip ONLY to the selected rows
-        # Note: We still iterate here, but only on 10% of the data
+        features = df_aug[self.feature_cols].to_numpy().copy()
+        mask = np.random.rand(len(features)) < prob
         if mask.any():
             features[mask] = np.array([self._horizontal_flip(row) for row in features[mask]])
-
-        # 4. Assign back directly (avoids creating an intermediate DataFrame)
         df_aug[self.feature_cols] = features
+        return df_aug
 
+    def augment_combined(self, df, flip_prob=0.5, jitter_prob=0.5, jitter_scale=1.0):
+        """
+        Apply augmentation: each image has flip_prob chance of flip,
+        jitter_prob chance of 3x3 jitter. Both can apply to same image.
+        """
+        df_aug = df.copy()
+        features = df_aug[self.feature_cols].to_numpy().copy()
+        n = len(features)
+
+        # Flip mask
+        flip_mask = np.random.rand(n) < flip_prob
+        if flip_mask.any():
+            features[flip_mask] = np.array([self._horizontal_flip(row) for row in features[flip_mask]])
+
+        # Jitter mask
+        jitter_mask = np.random.rand(n) < jitter_prob
+        if jitter_mask.any():
+            features[jitter_mask] = np.array([self._color_jitter_3x3(row, jitter_scale) for row in features[jitter_mask]])
+
+        df_aug[self.feature_cols] = features
         return df_aug
     # ---------------------------------------------------------
     # Splitting Methods
@@ -212,6 +220,81 @@ class DataLoader:
             "validation": splits['validation'],
             "test": splits['test']
         }
+
+    def prepare_data(self, test_size=0.10, val_size=0.10, labeled_ratio=0.10,
+                     seed=42, preprocess=True, normalize="z_score"):
+        """
+        Proper ML pipeline: split FIRST, then preprocess (normalize + augment train only).
+
+        Args:
+            preprocess: If True, applies normalization (train stats) + augmentation (train only).
+                        If False, returns raw splits with no normalization or augmentation.
+            normalize: "z_score" or "min_max" (only used if preprocess=True)
+
+        Returns:
+            dict with labeled_train, unlabeled_train, validation, test
+        """
+        np.random.seed(seed)
+
+        # 1. Split RAW data first (no preprocessing yet)
+        raw_splits = self.get_semi_supervised_split(
+            self.df, test_size=test_size, val_size=val_size,
+            labeled_ratio=labeled_ratio, seed=seed
+        )
+
+        if not preprocess:
+            # Return raw splits, no normalization or augmentation
+            return raw_splits
+
+        # 2-3. Normalize all splits using train stats
+        normalized = self.normalize_splits(raw_splits, normalize=normalize)
+
+        # 4. Augment TRAINING data only (50% flip + 50% jitter)
+        labeled_aug = self.augment_combined(
+            normalized["labeled_train"], flip_prob=0.5, jitter_prob=0.5
+        )
+        normalized["labeled_train"] = pd.concat(
+            [normalized["labeled_train"], labeled_aug], axis=0
+        ).reset_index(drop=True)
+
+        return normalized
+
+    def normalize_splits(self, splits, normalize="z_score"):
+        """
+        Normalize all splits using stats computed from labeled_train only.
+        Does NOT augment. Use this when you need normalization without augmentation
+        (e.g. for PCA experiments).
+
+        Args:
+            splits: dict from get_semi_supervised_split()
+            normalize: "z_score" or "min_max"
+
+        Returns:
+            dict with same keys, features normalized
+        """
+        train_features = splits["labeled_train"][self.feature_cols]
+
+        if normalize == "z_score":
+            mu = train_features.mean()
+            sigma = train_features.std()
+            sigma[sigma == 0] = 1
+            stats = {"type": "z_score", "mu": mu, "sigma": sigma}
+        else:  # min_max
+            x_min = train_features.min()
+            x_max = train_features.max()
+            denom = x_max - x_min
+            denom[denom == 0] = 1
+            stats = {"type": "min_max", "min": x_min, "denom": denom}
+
+        def apply_norm(df):
+            df_out = df.copy()
+            if stats["type"] == "z_score":
+                df_out[self.feature_cols] = (df[self.feature_cols] - stats["mu"]) / stats["sigma"]
+            else:
+                df_out[self.feature_cols] = (df[self.feature_cols] - stats["min"]) / stats["denom"]
+            return df_out
+
+        return {k: apply_norm(v) for k, v in splits.items()}
 
 
     def to_numpy(self, df, num_classes=10, one_hot=True, drop_na_labels=True):

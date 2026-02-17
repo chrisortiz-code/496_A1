@@ -1,21 +1,11 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import numpy as np
-
-TORCH_INIT_STRATEGIES = {
-    "he": lambda w: w.data.normal_(0, np.sqrt(2.0 / w.shape[1])),
-    "uniform": lambda w: nn.init.uniform_(w, -1 / np.sqrt(w.shape[1]), 1 / np.sqrt(w.shape[1])),
-    "normal": lambda w: nn.init.normal_(w, mean=0.0, std=0.01),
-}
+from VanillaModel import VanillaModel
 
 
-class Stage2Model(nn.Module):
+class Stage2Model(VanillaModel):
     """
-    Starts as a larger-than-necessary network (2x hidden units by default).
-    Supports magnitude-based weight pruning: zeros out the smallest |w| values
-    globally across all Linear layers, then enforces the mask during fine-tuning
-    so pruned weights stay at zero.
+    Extends VanillaModel with L1 regularization and magnitude-based pruning.
 
     Loss Function:
         L(w) = CrossEntropy + lambda1 * |w|
@@ -24,36 +14,14 @@ class Stage2Model(nn.Module):
     """
 
     def __init__(self, input_size=784, hidden_size=2056, output_size=10,
-                 init_strategy="he", lr=0.01, momentum=0.04, lambda1=1e-4):
-        super(Stage2Model, self).__init__()
-        if init_strategy not in TORCH_INIT_STRATEGIES:
-            raise ValueError(f"Strategy must be one of {list(TORCH_INIT_STRATEGIES.keys())}")
-
-        self.network = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, output_size)
-        )
-
-        weight_fn = TORCH_INIT_STRATEGIES[init_strategy]
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                weight_fn(m.weight)
-                nn.init.constant_(m.bias, 0)
-
-        self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = optim.SGD(self.parameters(), lr=lr, momentum=momentum)
-
-        # L1 regularization
+                 init_strategy="he", lr=0.01, momentum=0.04, lambda1=1e-4,
+                 pruned=False):
+        super().__init__(input_size=input_size, hidden_size=hidden_size,
+                         output_size=output_size, init_strategy=init_strategy,
+                         lr=lr, momentum=momentum)
         self.lambda1 = lambda1
-
-        # Pruning masks: 1 = keep, 0 = pruned. None until prune() is called.
         self.masks = {}
-
-    def forward(self, x):
-        return self.network(x)
+        self.pruned = pruned
 
     # ------------------------------------------------------------------
     # L1 Regularization
@@ -74,11 +42,7 @@ class Stage2Model(nn.Module):
         Global magnitude-based pruning.
         Removes `rate` fraction of weights (by smallest |w|) across all
         Linear layers. Stores binary masks and zeros out pruned weights.
-
-        Args:
-            rate: float in (0, 1), e.g. 0.25 means prune 25% of all weights
         """
-        # 1. Collect all weight magnitudes into a single flat tensor
         all_magnitudes = []
         for name, module in self.named_modules():
             if isinstance(module, nn.Linear):
@@ -86,13 +50,11 @@ class Stage2Model(nn.Module):
 
         all_magnitudes = torch.cat(all_magnitudes)
 
-        # 2. Find the threshold: the value below which `rate` fraction of weights fall
         k = int(rate * all_magnitudes.numel())
         if k == 0:
             return
         threshold = torch.kthvalue(all_magnitudes, k).values.item()
 
-        # 3. Build masks and apply
         total_pruned = 0
         total_weights = 0
         self.masks = {}
@@ -105,6 +67,7 @@ class Stage2Model(nn.Module):
                 total_pruned += (mask == 0).sum().item()
                 total_weights += mask.numel()
 
+        self.pruned = True
         print(f"   Pruned {total_pruned}/{total_weights} weights "
               f"({100 * total_pruned / total_weights:.1f}%) at threshold={threshold:.6f}")
 
@@ -125,7 +88,7 @@ class Stage2Model(nn.Module):
         return zeros / total if total > 0 else 0.0
 
     # ------------------------------------------------------------------
-    # Training / Evaluation (same API as VanillaModel)
+    # Training (overrides VanillaModel to add L1 + mask enforcement)
     # ------------------------------------------------------------------
     def train_epoch(self, train_loader, device):
         self.train()
@@ -142,8 +105,8 @@ class Stage2Model(nn.Module):
             loss.backward()
             self.optimizer.step()
 
-            # Re-zero pruned weights so they never come back
-            self._apply_masks()
+            if self.pruned:
+                self._apply_masks()
 
             total_loss += loss.item()
             _, predicted = torch.max(outputs, 1)
@@ -151,22 +114,3 @@ class Stage2Model(nn.Module):
             correct += (predicted == batch_y).sum().item()
 
         return total_loss / len(train_loader), correct / total
-
-    @torch.no_grad()
-    def evaluate(self, loader, device):
-        self.eval()
-        total_loss = 0.0
-        correct = 0
-        total = 0
-
-        for batch_X, batch_y in loader:
-            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-            outputs = self(batch_X)
-            loss = self.criterion(outputs, batch_y)
-
-            total_loss += loss.item()
-            _, predicted = torch.max(outputs, 1)
-            total += batch_y.size(0)
-            correct += (predicted == batch_y).sum().item()
-
-        return total_loss / len(loader), correct / total

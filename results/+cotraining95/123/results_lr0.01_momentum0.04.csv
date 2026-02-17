@@ -1,0 +1,2 @@
+config,seed,weight_init,normalization,augmentations,lr,momentum,epoch,train_loss,train_acc,val_loss,val_acc,test_acc,converged_epoch
++cotraining95,123,he,z_score,flip+jitter,0.01,0.04,1,0.0,0.0,0.0,0.86,0.8692857142857143,1

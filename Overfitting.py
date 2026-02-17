@@ -1,9 +1,6 @@
 import numpy as np
 from math import sqrt
 
-import numpy as np
-from math import sqrt
-
 class OverfitDetector:
     """
     Moving-average-based overfitting detector.
